@@ -1,0 +1,38 @@
+name: probe
+on:
+  push:
+    branches: ['probe/**']
+permissions:
+  contents: write
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - env:
+          APP_TOKEN: ${{ steps.app.outputs.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          ACTIONS_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN: ${{ github.run_id }}
+        run: |
+          git config user.name probe; git config user.email probe@invalid
+          app="https://x-access-token:$APP_TOKEN@github.com/$REPO"
+          act="https://x-access-token:$ACTIONS_TOKEN@github.com/$REPO"
+          try() { if out=$("$@" 2>&1); then echo "ALLOWED"; else echo "REFUSED: $(echo "$out" | grep -m1 -iE 'error|denied|refus|rule|permission' )"; fi; }
+          git checkout -q -b "probe-wf-$RUN"
+          echo "# $RUN" >> .github/workflows/probe.yml
+          git commit -qam "probe: edit workflow"
+          wf=$(try git push "$app" "HEAD:refs/heads/probe-wf-$RUN")
+          git checkout -q "$GITHUB_SHA"
+          git tag "v0.0.$RUN-app" && tag_app=$(try git push "$app" "refs/tags/v0.0.$RUN-app")
+          git tag "v0.0.$RUN-act" && tag_act=$(try git push "$act" "refs/tags/v0.0.$RUN-act")
+          body=$(printf 'Probe run %s\n- App pushes .github/workflows change: %s\n- App pushes v* tag: %s\n- Actions token pushes v* tag: %s\n' "$RUN" "$wf" "$tag_app" "$tag_act")
+          gh issue create -R "$REPO" --title "Probe results $RUN" --body "$body"
