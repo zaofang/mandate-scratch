@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# mandate-gate: semantic gate for one PR, run by the mandate-gate workflow.
+# Env: GH_TOKEN, GITHUB_REPOSITORY, GITHUB_EVENT_NAME, PR, HEAD_SHA, BASE_REF (e.g. origin/main).
+# Passes unless a detector fires and the BDFL has not approved HEAD_SHA.
+set -euo pipefail
+
+repo=$GITHUB_REPOSITORY
+bdfl=$(grep -om1 '@[A-Za-z0-9-]*' .github/CODEOWNERS | tr -d @)
+
+# Exit 0 if the PR changes a released section of CHANGELOG.md: any line at or below the first version heading.
+released_changelog_changed() {
+  local old new
+  old=$(git show "$BASE_REF:CHANGELOG.md" 2>/dev/null | grep -nm1 '^## \[\?[0-9]' | cut -d: -f1) || old=
+  new=$(grep -nm1 '^## \[\?[0-9]' CHANGELOG.md 2>/dev/null | cut -d: -f1) || new=
+  git diff -U0 "$BASE_REF"...HEAD -- CHANGELOG.md | awk -v old="${old:-0}" -v new="${new:-0}" '
+    /^@@/ {
+      split(substr($2, 2), o, ","); split(substr($3, 2), n, ",")
+      if (old && (o[2] == "" || o[2] > 0) && o[1] + (o[2] == "" ? 0 : o[2] - 1) >= old) hit = 1
+      if (new && (n[2] == "" || n[2] > 0) && n[1] + (n[2] == "" ? 0 : n[2] - 1) >= new) hit = 1
+    }
+    END { exit !hit }'
+}
+
+detectors() {
+  local labels profile
+  labels=$(gh pr view "$PR" -R "$repo" --json labels --jq '.labels[].name')
+  grep -qx release <<<"$labels" && echo "release label"
+  grep -qx gate <<<"$labels" && echo "gate label"
+  released_changelog_changed && echo "released CHANGELOG section changed"
+  profile=$(awk -F': *' '/^profile:/{print $2; exit}' VISION.md)
+  if [[ $profile == tooling && -f Cargo.toml ]]; then
+    cargo semver-checks --baseline-rev "$BASE_REF" >/dev/null 2>&1 || echo "breaking public API (cargo semver-checks)"
+  fi
+  return 0
+}
+
+fired=$(detectors)
+if [[ -z $fired ]]; then
+  echo "no gate"
+  exit 0
+fi
+echo "gated: $fired" | paste -sd ';'
+
+gh pr edit "$PR" -R "$repo" --add-label gate >/dev/null
+gh api -X POST "repos/$repo/pulls/$PR/requested_reviewers" -f "reviewers[]=$bdfl" >/dev/null 2>&1 || true
+
+state=$(gh api "repos/$repo/pulls/$PR/reviews" --paginate \
+  --jq "[.[] | select(.user.login == \"$bdfl\" and .commit_id == \"$HEAD_SHA\" and .state != \"COMMENTED\")] | last | .state // \"\"")
+if [[ $state != APPROVED ]]; then
+  echo "waiting for $bdfl to approve $HEAD_SHA"
+  exit 1
+fi
+
+# Each run is its own check suite, so an earlier failure on this commit stays red until re-run.
+if [[ $GITHUB_EVENT_NAME == pull_request_review ]]; then
+  gh run list -R "$repo" --workflow mandate-gate --commit "$HEAD_SHA" --event pull_request --status failure \
+    --json databaseId --jq '.[].databaseId' | while read -r id; do gh run rerun "$id" -R "$repo"; done
+fi
+echo "approved by $bdfl"

@@ -5,19 +5,22 @@ on:
   pull_request_review:
     types: [submitted, dismissed]
 permissions:
-  pull-requests: read
+  actions: write
+  contents: read
+  pull-requests: write
 jobs:
   mandate-gate:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
       - env:
           GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
-          GATED: ${{ contains(github.event.pull_request.labels.*.name, 'gate') }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: origin/${{ github.event.pull_request.base.ref }}
         run: |
-          [ "$GATED" = true ] || exit 0
-          state=$(gh api "repos/$REPO/pulls/$PR/reviews" --jq "[.[] | select(.user.login == \"amteb\" and .commit_id == \"$HEAD\")] | last | .state // \"\"")
-          echo "latest BDFL review on $HEAD: ${state:-none}"
-          [ "$state" = APPROVED ]
+          true
+          bash bin/mandate-gate
