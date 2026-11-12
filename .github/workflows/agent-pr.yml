@@ -1,0 +1,22 @@
+name: agent-pr
+on:
+  push:
+    branches: ['agent/**', 'claude/**']
+jobs:
+  open:
+    runs-on: ubuntu-latest
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          [ -n "$(gh pr list -R "$REPO" --head "$BRANCH" --json number --jq '.[].number')" ] && exit 0
+          title=$(gh api "repos/$REPO/commits/$SHA" --jq '.commit.message | split("\n")[0]')
+          gh pr create -R "$REPO" --head "$BRANCH" --base main --title "$title" --body "Opened by agent-pr for \`$BRANCH\`."
