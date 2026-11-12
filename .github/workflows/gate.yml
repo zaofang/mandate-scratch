@@ -1,0 +1,23 @@
+name: mandate-gate
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  pull_request_review:
+    types: [submitted, dismissed]
+permissions:
+  pull-requests: read
+jobs:
+  mandate-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          GATED: ${{ contains(github.event.pull_request.labels.*.name, 'gate') }}
+        run: |
+          [ "$GATED" = true ] || exit 0
+          state=$(gh api "repos/$REPO/pulls/$PR/reviews" --jq "[.[] | select(.user.login == \"amteb\" and .commit_id == \"$HEAD\")] | last | .state // \"\"")
+          echo "latest BDFL review on $HEAD: ${state:-none}"
+          [ "$state" = APPROVED ]
