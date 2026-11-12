@@ -1,0 +1,11 @@
+# Gated paths. `mandate init` replaces @BDFL. No catch-all.
+/VISION.md        @BDFL
+/ROADMAP.md       @BDFL
+/AGENTS.md        @BDFL
+/CLAUDE.md        @BDFL
+/docs/adr/        @BDFL
+/docs/rfc/        @BDFL
+/docs/milestones/ @BDFL
+/.mandate/        @BDFL
+/.github/         @BDFL
+# profile entries follow

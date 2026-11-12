@@ -1,0 +1,8 @@
+name: check-test
+on: pull_request
+jobs:
+  check-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: yq --version && bash mc/tests/check.sh

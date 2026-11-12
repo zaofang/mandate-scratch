@@ -1,0 +1,12 @@
+name: mandate-check
+on: pull_request
+jobs:
+  mandate-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: |
+          curl -fsSL "https://raw.githubusercontent.com/zaofang/mandate/v$(cat .mandate/version)/bin/mandate-check" -o "$RUNNER_TEMP/mandate-check"
+          bash "$RUNNER_TEMP/mandate-check" "origin/$GITHUB_BASE_REF"

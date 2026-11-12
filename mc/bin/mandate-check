@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# mandate check: lint a Mandate project. Usage: mandate-check [base-ref]
+# With base-ref, accepted ADR Decisions are compared against it.
+# MANDATE_SOURCE: a local Mandate checkout to compare .mandate/agents.md against, instead of the pinned release.
+set -euo pipefail
+
+base=${1:-}
+status=0
+fail() { echo "mandate-check: $*" >&2; status=1; }
+
+# Prints the YAML front matter of $1 as JSON, or fails.
+front() { awk 'NR==1 && $0!="---"{exit 1} NR>1 && $0=="---"{exit} NR>1' "$1" | yq -o=json '.'; }
+
+for f in VISION.md ROADMAP.md AGENTS.md CLAUDE.md README.md CHANGELOG.md docs/architecture.md .mandate/agents.md .mandate/version; do
+  [[ -f $f ]] || fail "missing $f"
+done
+
+if vision=$(front VISION.md 2>/dev/null); then
+  jq -e '.name | type == "string"' <<<"$vision" >/dev/null || fail "VISION.md: name missing"
+  jq -e '.profile | IN("tooling", "game")' <<<"$vision" >/dev/null || fail "VISION.md: profile must be tooling or game"
+  jq -e '.status | IN("inception", "active", "maintenance", "archived")' <<<"$vision" >/dev/null || fail "VISION.md: invalid status"
+  profile=$(jq -r '.profile' <<<"$vision")
+else
+  fail "VISION.md: front matter does not parse"
+  profile=
+fi
+
+# Documents numbered from 1 with no gaps; id matches file name; status valid.
+check_series() {
+  local dir=$1 width=$2 statuses=$3 n=0 f id meta
+  [[ -d $dir ]] || return 0
+  for f in "$dir"/[0-9]*.md; do
+    [[ -e $f ]] || break
+    n=$((n + 1))
+    id=$(printf "%0${width}d" "$n")
+    [[ $(basename "$f") == "$id"-*.md ]] || { fail "$dir: expected number $id, found $(basename "$f")"; return; }
+    meta=$(front "$f" 2>/dev/null) || { fail "$f: front matter does not parse"; continue; }
+    # Read raw: YAML would turn a zero-padded id into a number.
+    grep -qx "id: $id" "$f" || fail "$f: id must be $id"
+    jq -e --arg re "$statuses" '.status | tostring | test($re)' <<<"$meta" >/dev/null || fail "$f: invalid status"
+  done
+}
+check_series docs/adr 4 '^(accepted|superseded by [0-9]{4})$'
+check_series docs/rfc 4 '^(accepted|withdrawn)$'
+check_series docs/milestones 3 '^(active|done)$'
+
+decision() { awk '/^## Decision$/{on=1; next} /^## /{on=0} on'; }
+if [[ -n $base ]]; then
+  for f in docs/adr/[0-9]*.md; do
+    [[ -e $f ]] || break
+    old=$(git show "$base:$f" 2>/dev/null) || continue
+    [[ $(decision <<<"$old") == $(decision <"$f") ]] || fail "$f: an accepted Decision changed; supersede it with a new ADR"
+  done
+fi
+
+[[ $(cat CLAUDE.md 2>/dev/null) == $'@.mandate/agents.md\n@AGENTS.md' ]] || fail "CLAUDE.md must import @.mandate/agents.md then @AGENTS.md, nothing else"
+
+if [[ -f .mandate/version && -f .mandate/agents.md ]]; then
+  if [[ -n ${MANDATE_SOURCE:-} ]]; then
+    pinned=$(cat "$MANDATE_SOURCE/template/.mandate/agents.md")
+  else
+    pinned=$(curl -fsSL "https://raw.githubusercontent.com/zaofang/mandate/v$(cat .mandate/version)/template/.mandate/agents.md") || { fail ".mandate/agents.md: cannot fetch v$(cat .mandate/version)"; pinned=; }
+  fi
+  [[ -z $pinned || $(cat .mandate/agents.md) == "$pinned" ]] || fail ".mandate/agents.md differs from the pinned version; run mandate sync"
+fi
+
+# Every required check names a job that runs on every pull_request, unfiltered.
+jobs=$(for w in .github/workflows/*.yml .github/workflows/*.yaml; do
+  if [[ -e $w ]]; then yq -o=json '.' "$w"; fi
+done | jq -rs '
+  .[] | select(
+    (.on | if type == "string" then . == "pull_request"
+           elif type == "array" then index("pull_request") != null
+           else has("pull_request") and ((.pull_request // {}) | (has("paths") or has("paths-ignore") or has("branches") or has("branches-ignore")) | not)
+           end))
+  | .jobs | to_entries[] | .value.name // .key')
+for r in .github/rulesets/*.json; do
+  [[ -e $r ]] || break
+  for ctx in $(jq -r '.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context' "$r"); do
+    grep -qxF "$ctx" <<<"$jobs" || fail "$r: required check $ctx is not a job run on every pull_request"
+  done
+done
+
+if [[ $profile == game ]]; then
+  command -v reuse >/dev/null || fail "game profile: reuse is not installed"
+  reuse lint >/dev/null 2>&1 || fail "game profile: files without a REUSE licence record (run reuse lint)"
+fi
+
+exit "$status"
